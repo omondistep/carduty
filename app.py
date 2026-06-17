@@ -1,7 +1,10 @@
 import sqlite3
 import os
-from flask import Flask, jsonify, request, render_template, g
+import io
+from flask import Flask, jsonify, request, render_template, g, send_file
 from datetime import datetime
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'kraduty.db')
@@ -284,6 +287,123 @@ def api_calculate():
     result['depreciation_rate'] = f'{get_depreciation(age_years, is_direct) * 100:.0f}%'
 
     return jsonify(result)
+
+@app.route('/api/report/duties-below')
+def api_report_duties_below():
+    yom = int(request.args.get('yom', CURRENT_YEAR))
+    mom = int(request.args.get('mom', 1))
+    max_duty = float(request.args.get('max_duty', 500000))
+    is_direct = request.args.get('is_direct', 'true') == 'true'
+    vehicle_type = request.args.get('vehicle_type', 'motor_vehicle')
+
+    db = get_db()
+
+    if vehicle_type == 'motor_vehicle':
+        cur = db.execute("SELECT * FROM motor_vehicles")
+        rows = cur.fetchall()
+    elif vehicle_type == 'motor_cycle':
+        cur = db.execute("SELECT * FROM motor_cycles")
+        rows = cur.fetchall()
+    else:
+        return jsonify({'error': 'Unsupported vehicle type'}), 400
+
+    current_month = 6
+    total_months = (CURRENT_YEAR * 12 + current_month) - (yom * 12 + mom)
+    age_years = total_months / 12.0
+    dep_rate = get_depreciation(age_years, is_direct)
+
+    results = []
+    for row in rows:
+        row = dict(row)
+        crsp = row.get('crsp')
+        if not crsp:
+            continue
+
+        if vehicle_type == 'motor_vehicle' and is_direct and (CURRENT_YEAR - yom) > 7:
+            continue
+
+        engine_cc = str(row.get('engine_capacity') or '0')
+        fuel = str(row.get('fuel') or 'GASOLINE')
+
+        tax = calc_taxes(crsp, age_years, is_direct, vehicle_type, engine_cc, fuel)
+
+        if tax['grand_total'] < max_duty:
+            entry = {**row, **tax}
+            entry['age_years'] = round(age_years, 1)
+            entry['depreciation_rate'] = f'{dep_rate * 100:.0f}%'
+            results.append(entry)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Duties Below Threshold"
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="2D6A4F", end_color="2D6A4F", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+
+    if vehicle_type == 'motor_vehicle':
+        cols = [
+            'make', 'model', 'model_number', 'transmission', 'drive_config',
+            'engine_capacity', 'body_type', 'gvw', 'seating', 'fuel', 'crsp',
+            'age_years', 'depreciation_rate',
+            'grand_total', 'customs_value', 'import_duty', 'excise_duty',
+            'vat', 'rdl', 'idf'
+        ]
+        headers = [
+            'Make', 'Model', 'Model Number', 'Transmission', 'Drive Config',
+            'Engine Capacity', 'Body Type', 'GVW', 'Seating', 'Fuel', 'CRSP (KES)',
+            'Age (yrs)', 'Depreciation Rate',
+            'Total Duty (KES)', 'Customs Value (KES)', 'Import Duty (KES)',
+            'Excise Duty (KES)', 'VAT (KES)', 'RDL (KES)', 'IDF (KES)'
+        ]
+    else:
+        cols = [
+            'make', 'model', 'model_number', 'transmission',
+            'engine_capacity', 'seating', 'fuel', 'crsp',
+            'age_years', 'depreciation_rate',
+            'grand_total', 'customs_value', 'import_duty', 'excise_duty',
+            'vat', 'rdl', 'idf'
+        ]
+        headers = [
+            'Make', 'Model', 'Model Number', 'Transmission',
+            'Engine Capacity', 'Seating', 'Fuel', 'CRSP (KES)',
+            'Age (yrs)', 'Depreciation Rate',
+            'Total Duty (KES)', 'Customs Value (KES)', 'Import Duty (KES)',
+            'Excise Duty (KES)', 'VAT (KES)', 'RDL (KES)', 'IDF (KES)'
+        ]
+
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    for row_idx, entry in enumerate(results, 2):
+        for col_idx, key in enumerate(cols, 1):
+            val = entry.get(key)
+            if isinstance(val, float):
+                val = round(val, 2)
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.border = thin_border
+            if isinstance(val, (int, float)):
+                cell.alignment = Alignment(horizontal="right")
+
+    for col_idx, _ in enumerate(headers, 1):
+        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else 'A'].bestFit = True
+        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else 'A'].width = max(12, len(headers[col_idx - 1]) + 4)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f'duties_below_{int(max_duty)}_{vehicle_type}_yom{yom}_mom{mom}.xlsx'
+    return send_file(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True, download_name=filename)
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5812))

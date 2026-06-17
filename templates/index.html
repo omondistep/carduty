@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KRA Duty Calculator — CRSP 2025</title>
+<title>KRA Duty Calculator — KRA CRSP 2025</title>
 <style>
 :root {
   --bg: #eae7e1;
@@ -144,7 +144,7 @@ body {
 <div class="container">
   <div class="header">
     <h1>KRA Duty Calculator</h1>
-    <p>CRSP July 2025 &middot; Kenya Motor Vehicle Import Duties</p>
+    <p>KRA CRSP <span id="currentYearDisplay"></span> &middot; Kenya Motor Vehicle Import Duties</p>
   </div>
 
   <div class="card">
@@ -232,6 +232,46 @@ body {
     <div class="result-grid" id="resultGrid"></div>
   </div>
 
+  <div class="card" id="reportCard">
+    <div class="card-title">Bulk Duty Report — Find Vehicles Under a Given Duty Threshold</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label for="reportYom">Year manufactured</label>
+        <select id="reportYom"></select>
+      </div>
+      <div class="form-group">
+        <label for="reportMom">Month manufactured</label>
+        <div style="display:flex;gap:6px;align-items:stretch">
+          <select id="reportMom" style="flex:1"></select>
+          <span id="reportTimingBadge" style="display:none;padding:8px 10px;border-radius:8px;font-size:0.75rem;font-weight:600;white-space:nowrap;align-items:center;border:1.5px solid"></span>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="reportType">Vehicle type</label>
+        <select id="reportType">
+          <option value="motor_vehicle">Motor Vehicle</option>
+          <option value="motor_cycle">Motor Cycle</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="reportImportType">Import type</label>
+        <select id="reportImportType">
+          <option value="true">Direct Import</option>
+          <option value="false">Previously Registered in Kenya</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="reportMaxDuty">Max duty per vehicle (KES)</label>
+        <input type="text" id="reportMaxDuty" value="500,000">
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button class="btn" id="reportBtn">Generate &amp; Download Excel</button>
+      </div>
+    </div>
+    <div class="loading" id="reportLoading" style="margin-top:10px">Generating report …</div>
+    <div class="error" id="reportError" style="margin-top:10px"></div>
+  </div>
+
   <div class="card" id="tipsCard">
     <div class="tips-toggle open" id="tipsToggle">
       <span class="arrow">&#9654;</span> Import Timing Guide
@@ -271,6 +311,7 @@ const CURRENT_YEAR = 2025;
 const $ = id => document.getElementById(id);
 
 /* ---- populate static selects ---- */
+document.getElementById('currentYearDisplay').textContent = new Date().getFullYear();
 (function(){
   const yom = $('yom');
   for (let y = CURRENT_YEAR; y >= 2018; y--) {
@@ -608,6 +649,75 @@ document.getElementById('tipsToggle').addEventListener('click', function(){
   this.classList.toggle('open');
   document.getElementById('tipsBody').classList.toggle('open');
 });
+
+/* ---- report ---- */
+(function(){
+  const ryom = $('reportYom');
+  for (let y = CURRENT_YEAR; y >= 2018; y--) {
+    const o = document.createElement('option');
+    o.value = y; o.textContent = y;
+    if (y === CURRENT_YEAR) o.selected = true;
+    ryom.appendChild(o);
+  }
+  const rmom = $('reportMom');
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  months.forEach((m,i) => {
+    const o = document.createElement('option');
+    o.value = i+1; o.textContent = m;
+    if (i+1 === 6) o.selected = true;
+    rmom.appendChild(o);
+  });
+})();
+
+$('reportMaxDuty').onblur = function() {
+  const raw = this.value.replace(/,/g, '');
+  const num = parseInt(raw, 10);
+  if (!isNaN(num) && num > 0) this.value = num.toLocaleString('en-KE');
+};
+
+function updateReportTimingBadge() {
+  const yom = parseInt($('reportYom').value);
+  const mom = parseInt($('reportMom').value);
+  const el = $('reportTimingBadge');
+  if (!yom || !mom) { el.style.display = 'none'; return; }
+  const curMonth = new Date().getMonth() + 1;
+  if (curMonth >= mom) {
+    el.style.display = 'inline-flex';
+    el.textContent = 'Post-birthday \u2014 lower duty';
+    el.style.background = '#d8f3dc';
+    el.style.borderColor = '#a7d4b5';
+    el.style.color = '#1b7a4a';
+  } else {
+    el.style.display = 'inline-flex';
+    el.textContent = 'Pre-birthday \u2014 higher duty';
+    el.style.background = '#fde8e4';
+    el.style.borderColor = '#e8c4b8';
+    el.style.color = '#b04030';
+  }
+}
+$('reportYom').addEventListener('change', updateReportTimingBadge);
+$('reportMom').addEventListener('change', updateReportTimingBadge);
+
+$('reportBtn').onclick = function() {
+  const yom = parseInt($('reportYom').value);
+  const mom = parseInt($('reportMom').value);
+  const raw = $('reportMaxDuty').value.replace(/,/g, '');
+  const maxDuty = parseFloat(raw);
+  const vehicleType = $('reportType').value;
+  const isDirect = $('reportImportType').value;
+  if (!yom) { $('reportError').textContent = 'Select year of manufacture.'; $('reportError').style.display = 'block'; return; }
+  if (!mom) { $('reportError').textContent = 'Select month of manufacture.'; $('reportError').style.display = 'block'; return; }
+  if (!maxDuty || maxDuty <= 0) { $('reportError').textContent = 'Enter a valid max duty amount.'; $('reportError').style.display = 'block'; return; }
+  $('reportError').style.display = 'none';
+  $('reportLoading').style.display = 'block';
+  this.disabled = true;
+  const url = '/api/report/duties-below?yom=' + yom + '&mom=' + mom + '&max_duty=' + maxDuty + '&vehicle_type=' + vehicleType + '&is_direct=' + isDirect;
+  window.location.href = url;
+  setTimeout(() => {
+    $('reportLoading').style.display = 'none';
+    $('reportBtn').disabled = false;
+  }, 3000);
+};
 
 /* ---- init ---- */
 onTypeChange();
