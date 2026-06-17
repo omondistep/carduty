@@ -578,6 +578,7 @@ $('calcBtn').onclick = function() {
       vehicle_type: currentType,
       engine_capacity: $('engineCapacity').value,
       fuel: $('fuel').value,
+      body_type: $('bodyType') ? $('bodyType').value : '',
     })
   }).then(r=>r.json()).then(data => {
     $('loading').style.display = 'none';

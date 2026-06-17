@@ -22,8 +22,86 @@ def safe_int(v):
         digits = ''.join(c for c in str(v) if c.isdigit())
         return int(digits[0]) if digits else None
 
+import re
+
 def clean(s):
-    return str(s).strip() if s else None
+    if s is None: return None
+    s = str(s).strip()
+    return re.sub(r'\s+', ' ', s) if s else None
+
+def normalize_general(s):
+    c = clean(s)
+    return c.upper() if c else None
+
+def normalize_model(s):
+    val = normalize_general(s)
+    if not val: return None
+    # Remove spaces around certain characters to unify e.g. "D: 5" and "D:5"
+    val = re.sub(r'\s*([+:\-/])\s*', r'\1', val)
+    # Handle specific common cases like "TOWN ACE" vs "TOWNACE"
+    val = val.replace('TOWN ACE', 'TOWNACE')
+    val = val.replace('LAND MARK', 'LANDMARK')
+    return val
+
+def normalize_transmission(s):
+    val = normalize_general(s)
+    if not val: return None
+    # Remove all spaces for codes like "6 MT" -> "6MT"
+    val = "".join(val.split())
+    if "MANUAL" in val: return "MANUAL"
+    return val
+
+def normalize_drive(s):
+    val = normalize_general(s)
+    if not val: return None
+    val = val.replace('*', 'X').replace('×', 'X')
+    val = "".join(val.split())
+    # Handle common typos
+    if val == "4WDD": return "4WD"
+    return val
+
+def normalize_body(s):
+    val = normalize_general(s)
+    if not val: return None
+    
+    # Mappings
+    if val in ('SAL', 'SALOON', 'SEDAN'): return 'SALOON'
+    if val in ('HATCBACK', 'HATCHBACK'): return 'HATCHBACK'
+    if val in ('S/WAGON', 'S. WAGON', 'STATION WAGON', 'WAGON'): return 'STATION WAGON'
+    if val in ('D/CAB', 'DOUBLE CAB', 'DOUBLE CABIN', 'DUAL CAB', 'CREW CAB'): return 'DOUBLE CAB'
+    if val in ('S/CAB', 'S/CABIN', 'SINGLE CAB', 'SINGLE CABIN'): return 'SINGLE CAB'
+    if val in ('PICK UP', 'PICKUP'): return 'PICKUP'
+    if val in ('TRK', 'TRUCK'): return 'TRUCK'
+    if val in ('PRIM£ MOVER', 'PM', 'PRIME MOVER'): return 'PRIME MOVER'
+    if val in ('MINVAN', 'MINIVAN'): return 'MINIVAN'
+    if val in ('TRANSIT MIXER', 'MIXER'): return 'TRANSIT MIXER'
+    if val == 'CONVRTIBLE': return 'CONVERTIBLE'
+    
+    return val
+
+def normalize_fuel(fuel):
+    if not fuel:
+        return None
+    cleaned = str(fuel).strip()
+    f_upper = "".join(cleaned.upper().split())
+    
+    if f_upper in ("DIESEL", "DEISEL") or "DEISEL" in f_upper:
+        return "DIESEL"
+    if f_upper in ("ELECCTRIC", "ELECTRIC", "ELECTRIC(EV)", "ELECTIRC"):
+        return "ELECTRIC"
+    if f_upper in ("GASOLINE", "GASOLIN"):
+        return "GASOLINE"
+    if f_upper in ("PETROL", "PETORL"):
+        return "PETROL"
+    if "HYBRID" in f_upper:
+        if "PLUG" in f_upper:
+            return "PLUG-IN HYBRID"
+        if "PETROL" in f_upper:
+            return "PETROL/ELECTRIC"
+        return "HYBRID"
+    # Filter out numeric junk if any
+    if f_upper.isdigit(): return None
+    return cleaned.upper()
 
 wb = openpyxl.load_workbook(XLSX_PATH, data_only=True)
 
@@ -58,8 +136,9 @@ for row in ws.iter_rows(min_row=3, max_row=ws.max_row, values_only=True):
         cur.execute("""INSERT INTO motor_vehicles 
             (make, model, model_number, transmission, drive_config, engine_capacity, body_type, gvw, seating, fuel, crsp)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (clean(make), clean(model), clean(model_no), clean(trans), clean(drive),
-             clean(eng), clean(body), safe_float(gvw), safe_int(seat), clean(fuel), safe_float(crsp)))
+            (normalize_general(make), normalize_model(model), normalize_general(model_no), 
+             normalize_transmission(trans), normalize_drive(drive), clean(eng), 
+             normalize_body(body), safe_float(gvw), safe_int(seat), normalize_fuel(fuel), safe_float(crsp)))
         count += 1
 print(f"Inserted {count} motor vehicles")
 
@@ -85,8 +164,8 @@ for row in ws2.iter_rows(min_row=3, max_row=ws2.max_row, values_only=True):
         cur.execute("""INSERT INTO motor_cycles
             (make, model, model_number, transmission, engine_capacity, seating, fuel, crsp)
             VALUES (?,?,?,?,?,?,?,?)""",
-            (clean(make), clean(model), clean(model_no), clean(trans),
-             safe_float(eng), safe_int(seat), clean(fuel), safe_float(crsp)))
+            (normalize_general(make), normalize_model(model), normalize_general(model_no), 
+             normalize_transmission(trans), safe_float(eng), safe_int(seat), normalize_fuel(fuel), safe_float(crsp)))
         count2 += 1
 print(f"Inserted {count2} motor cycles")
 
@@ -114,7 +193,7 @@ for row in ws3.iter_rows(min_row=3, max_row=ws3.max_row, values_only=True):
             continue
     if current_make and model_val and crsp_val:
         cur.execute("""INSERT INTO tractors (make, model, horsepower, crsp) VALUES (?,?,?,?)""",
-            (current_make, str(model_val).strip(), safe_float(hp_val), safe_float(crsp_val)))
+            (normalize_general(current_make), normalize_model(model_val), safe_float(hp_val), safe_float(crsp_val)))
         count3 += 1
 print(f"Inserted {count3} tractors")
 

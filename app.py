@@ -24,124 +24,184 @@ def close_db(exception):
 
 # Depreciation tables
 DIRECT_DEPR = [
-    (1, 2, 0.20), (2, 3, 0.30), (3, 4, 0.40), (4, 5, 0.50),
-    (5, 6, 0.55), (6, 7, 0.60), (7, 8, 0.65),
+    (0, 2, 0.20),  # 1 <=2 years
+    (2, 3, 0.30),  # 2 <=3 years
+    (3, 4, 0.40),  # 3 <=4 years
+    (4, 5, 0.50),  # 4 <=5 years
+    (5, 6, 0.55),  # 5 <=6 years
+    (6, 7, 0.60),  # 6 <=7 years
+    (7, 8, 0.65),  # 7 <=8 years
 ]
 
 PREV_REG_DEPR = [
-    (1, 0.20), (2, 0.35), (3, 0.50), (4, 0.60), (5, 0.70),
-    (6, 0.75), (7, 0.80), (8, 0.83), (9, 0.86), (10, 0.89),
-    (11, 0.90), (12, 0.91), (13, 0.92), (14, 0.93), (15, 0.94),
-    (16, 0.95),
-]
+    (0, 1, 0.20),
+    (1, 2, 0.35),
+    (2, 3, 0.50),
+    (3, 4, 0.60),
+    (4, 5, 0.70),
+    (5, 6, 0.75),
+    (6, 7, 0.80),
+    (7, 8, 0.83),
+    (8, 9, 0.86),
+    (9, 10, 0.89),
+    (10, 11, 0.90),
+    (11, 12, 0.91),
+    (12, 13, 0.92),
+    (13, 14, 0.93),
+    (14, 15, 0.94),
+] # over 15 years 95%
 
 def get_depreciation(years_old, is_direct_import=True):
     if is_direct_import:
         for lo, hi, rate in DIRECT_DEPR:
             if lo < years_old <= hi:
                 return rate
+        if years_old > 8: return 0.70 # Default cap for older if allowed
         return 0.0
     else:
-        for yr, rate in PREV_REG_DEPR:
-            if years_old <= yr:
+        for lo, hi, rate in PREV_REG_DEPR:
+            if lo < years_old <= hi:
                 return rate
-        return 0.95
+        if years_old > 15: return 0.95
+        return 0.0
 
-def calc_taxes(crsp, years_old, is_direct, vehicle_type, engine_cc, fuel):
+def calc_taxes(crsp, years_old, is_direct, vehicle_type, engine_cc, fuel, body_type=None):
     dep_rate = get_depreciation(years_old, is_direct)
-    crsp_after_dep = crsp * (1 - dep_rate)
-
-    if vehicle_type == 'motor_cycle':
-        customs = (crsp_after_dep / 1.25) / 1.25 / 1.16
-        import_duty = customs * 0.25
-        excise_val = 0
-        excise_duty = 12953.0
-        vat_val = crsp_after_dep / 1.25 + excise_duty
-        vat = vat_val * 0.16
-        rdl = customs * 0.02
-        idf = 0
-        grand_total = import_duty + excise_duty + vat + rdl + idf
-        components = {
-            'customs_value': round(customs, 2),
-            'import_duty': round(import_duty, 2),
-            'excise_duty': round(excise_duty, 2),
-            'vat_value': round(vat_val, 2),
-            'vat': round(vat, 2),
-            'rdl': round(rdl, 2),
-            'idf': round(idf, 2),
-            'grand_total': round(grand_total, 2),
-            'excise_rate': 'Flat 12,953 KES',
-            'import_duty_rate': '25%',
-        }
-        return components
-
-    if vehicle_type == 'tractor':
-        customs = (crsp_after_dep / 1.25) / 1.16
-        import_duty = 0
-        excise_duty = 0
-        vat_val = crsp_after_dep / 1.25
-        vat = vat_val * 0.16
-        rdl = customs * 0.02
-        idf = customs * 0.025
-        grand_total = import_duty + excise_duty + vat + rdl + idf
-        components = {
-            'customs_value': round(customs, 2),
-            'import_duty': round(import_duty, 2),
-            'import_duty_rate': '0%',
-            'excise_duty': round(excise_duty, 2),
-            'excise_rate': '0%',
-            'vat_value': round(vat_val, 2),
-            'vat': round(vat, 2),
-            'rdl': round(rdl, 2),
-            'idf': round(idf, 2),
-            'grand_total': round(grand_total, 2),
-        }
-        return components
-
+    
+    # Extra Depreciation - Defaulting to 0 for now as it's not in UI
+    extra_dep = 0.0
+    
     fuel_upper = fuel.upper() if fuel else ''
-    is_electric = 'ELECTRIC' in fuel_upper and 'HYBRID' not in fuel_upper and 'PLUG' not in fuel_upper
-
+    body_upper = body_type.upper() if body_type else ''
+    
+    # Clean CC
     try:
-        cc_str = engine_cc.split('(')[0].split(' kWh')[0].split(' ')[0] if engine_cc else '0'
+        cc_str = str(engine_cc).split('(')[0].split(' kWh')[0].split(' ')[0] if engine_cc else '0'
         cc = float(cc_str) if cc_str.replace('.', '', 1).isdigit() else 0
     except (ValueError, TypeError):
         cc = 0
 
-    if is_electric:
-        actual_import_duty_rate = 0.25
-        excise_rate = 0.10
+    # 1. Determine Tabulation
+    tab = 2 # Default to Tab 2
+    
+    eng_upper = str(engine_cc).upper() if engine_cc else ''
+    
+    # Improved is_electric detection
+    # A car is electric if fuel says ELECTRIC OR engine_capacity says EV/KWH/HP and it's NOT a hybrid
+    is_hybrid = 'HYBRID' in fuel_upper or 'EREV' in eng_upper or 'PHEV' in eng_upper
+    is_electric = ('ELECTRIC' in fuel_upper or 'EV' in eng_upper or 'KWH' in eng_upper or ' HP' in eng_upper) and not is_hybrid
+    
+    if vehicle_type == 'motor_cycle':
+        tab = 9
+    elif vehicle_type == 'tractor' or body_upper in ('TRACTOR', 'HEAVY MACHINERY', 'GRADER', 'MIXER', 'TRANSIT MIXER'):
+        tab = 10
+    elif 'AMBULANCE' in body_upper:
+        tab = 8
+    elif body_upper in ('PRIME MOVER', 'PM', 'PRIM£ MOVER'):
+        tab = 6
+    elif 'TRAILER' in body_upper:
+        tab = 7
+    elif is_electric:
+        tab = 4
+    elif 'SCHOOL BUS' in body_upper:
+        tab = 5
+    elif fuel_upper in ('GASOLINE', 'PETROL') and cc > 3000:
+        tab = 3
+    elif fuel_upper == 'DIESEL' and cc > 2500:
+        tab = 3
+    elif cc <= 1500:
+        tab = 1
     else:
-        actual_import_duty_rate = 0.35
-        if cc <= 1500:
-            excise_rate = 0.20
-        elif fuel_upper in ('GASOLINE', 'PETROL') and cc > 3000:
-            excise_rate = 0.35
-        elif fuel_upper in ('DIESEL') and cc > 2500:
-            excise_rate = 0.35
-        else:
-            excise_rate = 0.25
+        tab = 2
 
-    customs = (crsp_after_dep / 1.25) / 1.35 / (1 + excise_rate) / 1.16
-    import_duty = customs * actual_import_duty_rate
-    excise_val = customs + import_duty
-    excise_duty = excise_val * excise_rate
+    # 2. Assign Rates and Divisors based on Tab
+    import_rate = 0.35
+    excise_rate = 0.25
+    vat_rate = 0.16
+    
+    # Divisors: d1=Import, d2=Excise, d3=VAT
+    d1, d2, d3 = 1.35, 1.25, 1.16
+    
+    if tab == 1:
+        import_rate, excise_rate = 0.35, 0.20
+        d1, d2, d3 = 1.35, 1.20, 1.16
+    elif tab == 2:
+        import_rate, excise_rate = 0.35, 0.25
+        d1, d2, d3 = 1.35, 1.25, 1.16
+    elif tab == 3:
+        import_rate, excise_rate = 0.35, 0.35
+        d1, d2, d3 = 1.35, 1.35, 1.16
+    elif tab == 4:
+        import_rate, excise_rate = 0.25, 0.10
+        d1, d2, d3 = 1.25, 1.10, 1.16
+    elif tab == 5:
+        import_rate, excise_rate = 0.35, 0.25
+        d1, d2, d3 = 1.35, 1.25, 1.16
+    elif tab == 6 or tab == 7:
+        import_rate, excise_rate = 0.35, 0.00
+        d1, d2, d3 = 1.35, 1.0, 1.16
+    elif tab == 8:
+        import_rate, excise_rate = 0.00, 0.25
+        d1, d2, d3 = 1.25, 1.16, 1.0 # Formula says /1.25/1.16. 1.25 is for Excise.
+        # Wait, Tab 8 formula: ((CRSP/1.25)*(100%-Depreciation)/1.25/1.16)
+        # Import Duty 0%, Excise Duty 25%, VAT 16%
+        # So it's CRSP/1.25 * (1-dep) / 1.25 (excise) / 1.16 (vat)
+        d1, d2, d3 = 1.0, 1.25, 1.16
+    elif tab == 9:
+        import_rate = 0.25
+        excise_flat = 12952.83
+        d1, d2, d3 = 1.25, 1.0, 1.16
+    elif tab == 10:
+        import_rate, excise_rate = 0.00, 0.00
+        d1, d2, d3 = 1.0, 1.0, 1.16
+
+    # 3. Calculate Customs Value
+    # Custom Value = ((CRSP/1.25)*(100%-Depreciation)/divisor1/divisor2/divisor3)*(100%-Extra Depreciation)
+    if tab == 8: # Special case divisor handling based on user prompt
+        customs = ((crsp / 1.25) * (1 - dep_rate) / 1.25 / 1.16) * (1 - extra_dep)
+    elif tab == 9:
+        customs = ((crsp / 1.25) * (1 - dep_rate) / 1.25 / 1.16) * (1 - extra_dep)
+    elif tab == 10:
+        customs = ((crsp / 1.25) * (1 - dep_rate) / 1.16) * (1 - extra_dep)
+    elif tab == 6 or tab == 7:
+        customs = ((crsp / 1.25) * (1 - dep_rate) / 1.35 / 1.16) * (1 - extra_dep)
+    else:
+        customs = ((crsp / 1.25) * (1 - dep_rate) / d1 / d2 / d3) * (1 - extra_dep)
+
+    # 4. Calculate Duties
+    import_duty = customs * import_rate
+    
+    if tab == 9:
+        excise_duty = excise_flat
+    else:
+        excise_val = customs + import_duty
+        excise_duty = excise_val * excise_rate
+        
     vat_val = customs + import_duty + excise_duty
-    vat = vat_val * 0.16
-    rdl = customs * 0.02
-    idf = customs * 0.025
+    vat = vat_val * vat_rate
+    
+    # RDL and IDF (Exempt for previously registered)
+    if is_direct:
+        rdl = customs * 0.02
+        idf = customs * 0.025
+    else:
+        rdl = 0.0
+        idf = 0.0
+        
     grand_total = import_duty + excise_duty + vat + rdl + idf
 
     components = {
         'customs_value': round(customs, 2),
         'import_duty': round(import_duty, 2),
-        'import_duty_rate': f'{int(actual_import_duty_rate*100)}%',
+        'import_duty_rate': f'{int(import_rate*100)}%',
         'excise_duty': round(excise_duty, 2),
-        'excise_rate': f'{int(excise_rate*100)}%',
+        'excise_rate': f'{int(excise_rate*100)}%' if tab != 9 else 'Flat KES 12,952.83',
         'vat_value': round(vat_val, 2),
         'vat': round(vat, 2),
         'rdl': round(rdl, 2),
         'idf': round(idf, 2),
         'grand_total': round(grand_total, 2),
+        'tabulation': tab
     }
     return components
 
@@ -267,6 +327,7 @@ def api_calculate():
     vehicle_type = data.get('vehicle_type', 'motor_vehicle')
     engine_cc = data.get('engine_capacity', '0')
     fuel = data.get('fuel', 'GASOLINE')
+    body_type = data.get('body_type', '')
 
     if isinstance(is_direct, str):
         is_direct = is_direct == 'true'
@@ -279,7 +340,7 @@ def api_calculate():
     total_months = (CURRENT_YEAR * 12 + current_month) - (year_of_manufacture * 12 + month_of_manufacture)
     age_years = total_months / 12.0
 
-    result = calc_taxes(crsp, age_years, is_direct, vehicle_type, engine_cc, fuel)
+    result = calc_taxes(crsp, age_years, is_direct, vehicle_type, engine_cc, fuel, body_type)
     result['crsp'] = crsp
     result['yom'] = year_of_manufacture
     result['mom'] = month_of_manufacture
@@ -287,6 +348,8 @@ def api_calculate():
     result['depreciation_rate'] = f'{get_depreciation(age_years, is_direct) * 100:.0f}%'
 
     return jsonify(result)
+
+from openpyxl.utils import get_column_letter
 
 @app.route('/api/report/duties-below')
 def api_report_duties_below():
@@ -324,8 +387,9 @@ def api_report_duties_below():
 
         engine_cc = str(row.get('engine_capacity') or '0')
         fuel = str(row.get('fuel') or 'GASOLINE')
+        body_type = str(row.get('body_type') or '')
 
-        tax = calc_taxes(crsp, age_years, is_direct, vehicle_type, engine_cc, fuel)
+        tax = calc_taxes(crsp, age_years, is_direct, vehicle_type, engine_cc, fuel, body_type)
 
         if tax['grand_total'] < max_duty:
             entry = {**row, **tax}
@@ -337,12 +401,18 @@ def api_report_duties_below():
     ws = wb.active
     ws.title = "Duties Below Threshold"
 
+    # Styles
     header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill(start_color="2D6A4F", end_color="2D6A4F", fill_type="solid")
+    header_fill = PatternFill(start_color="1B4D38", end_color="1B4D38", fill_type="solid")
     header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    
+    even_fill = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid")
+    
     thin_border = Border(
-        left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
+        left=Side(style='thin', color='DDDDDD'), 
+        right=Side(style='thin', color='DDDDDD'),
+        top=Side(style='thin', color='DDDDDD'), 
+        bottom=Side(style='thin', color='DDDDDD')
     )
 
     if vehicle_type == 'motor_vehicle':
@@ -376,6 +446,7 @@ def api_report_duties_below():
             'Excise Duty (KES)', 'VAT (KES)', 'RDL (KES)', 'IDF (KES)'
         ]
 
+    # Write Headers
     for col_idx, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
@@ -383,19 +454,34 @@ def api_report_duties_below():
         cell.alignment = header_align
         cell.border = thin_border
 
+    # Write Data
     for row_idx, entry in enumerate(results, 2):
         for col_idx, key in enumerate(cols, 1):
             val = entry.get(key)
-            if isinstance(val, float):
-                val = round(val, 2)
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.border = thin_border
+            
+            # Alternating rows
+            if row_idx % 2 == 0:
+                cell.fill = even_fill
+
+            # Format numbers
             if isinstance(val, (int, float)):
+                if key in ('crsp', 'grand_total', 'customs_value', 'import_duty', 'excise_duty', 'vat', 'rdl', 'idf'):
+                    cell.value = round(val)
+                    cell.number_format = '#,##0'
                 cell.alignment = Alignment(horizontal="right")
 
-    for col_idx, _ in enumerate(headers, 1):
-        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else 'A'].bestFit = True
-        ws.column_dimensions[chr(64 + col_idx) if col_idx <= 26 else 'A'].width = max(12, len(headers[col_idx - 1]) + 4)
+    # Freeze top row
+    ws.freeze_panes = 'A2'
+    
+    # Add Filter
+    ws.auto_filter.ref = ws.dimensions
+
+    # Adjust Column Widths
+    for col_idx, header in enumerate(headers, 1):
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = max(13, len(header) + 2)
 
     output = io.BytesIO()
     wb.save(output)
