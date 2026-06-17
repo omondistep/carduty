@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KRA Duty Calculator — KRA CRSP 2025</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
 <style>
 :root {
   --bg: #eae7e1;
@@ -210,6 +212,35 @@ body {
 
       <div class="separator"></div>
 
+      <div class="card-title" style="grid-column:1/-1;margin-bottom:5px;font-size:0.7rem">Optional: Landed Cost Estimator</div>
+      <div class="form-group">
+        <label for="purchasePrice">Purchase Price</label>
+        <div style="display:flex;gap:4px">
+          <select id="currency" style="width:70px;padding-right:10px;background-image:none">
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="JPY">JPY</option>
+            <option value="EUR">EUR</option>
+            <option value="AED">AED</option>
+            <option value="ZAR">ZAR</option>
+          </select>
+          <input type="number" id="purchasePrice" placeholder="e.g. 5000" style="flex:1">
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="shippingCost">Shipping (USD)</label>
+        <input type="number" id="shippingCost" placeholder="e.g. 1500">
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label for="exchangeRate">Exchange Rate (vs KES)</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="number" id="exchangeRate" step="0.01" style="flex:1">
+          <button class="btn" id="fetchRateBtn" style="width:auto;margin:0;padding:8px 12px;font-size:0.75rem">Update from CBK</button>
+        </div>
+      </div>
+
+      <div class="separator"></div>
+
       <div class="form-group">
         <label for="mom">Month manufactured</label>
         <div style="display:flex;gap:6px;align-items:stretch">
@@ -251,6 +282,12 @@ body {
         <select id="reportType">
           <option value="motor_vehicle">Motor Vehicle</option>
           <option value="motor_cycle">Motor Cycle</option>
+        </select>
+      </div>
+      <div class="form-group" id="reportBodyGroup">
+        <label for="reportBodyType">Body type</label>
+        <select id="reportBodyType">
+          <option value="">Any</option>
         </select>
       </div>
       <div class="form-group">
@@ -310,6 +347,25 @@ body {
 const CURRENT_YEAR = 2025;
 const $ = id => document.getElementById(id);
 
+/* ---- state ---- */
+let variantData = [];
+let currentType = 'motor_vehicle';
+let liveRates = {};
+let lastCalculationData = null;
+
+/* ---- choices.js init ---- */
+const choices = {};
+const initChoice = (id) => {
+  if (choices[id]) choices[id].destroy();
+  choices[id] = new Choices($(id), {
+    searchEnabled: true,
+    itemSelectText: '',
+    shouldSort: false,
+    placeholder: true,
+    placeholderValue: 'Select'
+  });
+};
+
 /* ---- populate static selects ---- */
 document.getElementById('currentYearDisplay').textContent = new Date().getFullYear();
 (function(){
@@ -328,18 +384,29 @@ document.getElementById('currentYearDisplay').textContent = new Date().getFullYe
     if (i+1 === 6) o.selected = true;
     mom.appendChild(o);
   });
+  
+  // Fetch rates on load
+  fetch('/api/exchange-rates').then(r=>r.json()).then(r => {
+    liveRates = r;
+    updateExchangeRateField();
+  });
 })();
 
-/* ---- state ---- */
-let variantData = [];
-let currentType = 'motor_vehicle';
+function updateExchangeRateField() {
+  const curr = $('currency').value;
+  if (liveRates[curr]) {
+    $('exchangeRate').value = liveRates[curr].toFixed(2);
+  }
+}
 
-function vehicleType() { return currentType; }
-
-function makesApi()      { return {motor_vehicle:'/api/makes',       motor_cycle:'/api/mc_makes',       tractor:'/api/tractor_makes'}[vehicleType()]; }
-function modelsApi()     { return {motor_vehicle:'/api/models',      motor_cycle:'/api/mc_models',      tractor:'/api/tractor_models'}[vehicleType()]; }
-function modelNosApi()   { return {motor_vehicle:'/api/model_numbers', motor_cycle:'/api/mc_model_numbers', tractor:null}[vehicleType()]; }
-function variantsApi()   { return {motor_vehicle:'/api/variants',    motor_cycle:'/api/mc_variants',    tractor:null}[vehicleType()]; }
+$('currency').onchange = updateExchangeRateField;
+$('fetchRateBtn').onclick = (e) => {
+  e.preventDefault();
+  fetch('/api/exchange-rates?refresh=true').then(r=>r.json()).then(r => {
+    liveRates = r;
+    updateExchangeRateField();
+  });
+};
 
 /* ---- tabs ---- */
 document.querySelectorAll('.type-tab').forEach(tab => {
@@ -360,15 +427,18 @@ function onTypeChange() {
 
 /* ---- data loading ---- */
 function loadMakes() {
-  fetch(makesApi()).then(r => r.json()).then(items => {
-    const sel = $('make');
-    sel.innerHTML = '<option value="">Select make</option>';
-    items.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
-  });
+  fetch(currentType === 'motor_vehicle' ? '/api/makes' : (currentType === 'motor_cycle' ? '/api/mc_makes' : '/api/tractor_makes'))
+    .then(r => r.json()).then(items => {
+      const sel = $('make');
+      sel.innerHTML = '<option value="">Select make</option>';
+      items.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+      initChoice('make');
+    });
 }
 
 function resetAll() {
   $('model').innerHTML = '<option value="">Select model</option>';
+  initChoice('model');
   if ($('modelNumber')) $('modelNumber').innerHTML = '<option value="">Any</option>';
   $('crsp').value = '';
   delete $('crsp').dataset.crspRaw;
@@ -385,87 +455,69 @@ function resetVariantSelects() {
   ids.forEach(id => { const el = $(id); if (el) el.innerHTML = '<option value="">Select</option>'; });
 }
 
-$('make').onchange = function() {
-  if ($('modelNumber')) $('modelNumber').innerHTML = '<option value="">Any</option>';
+$('make').addEventListener('change', function() {
   resetAll();
-  $('calcBtn').disabled = true;
   if (!this.value) return;
-  if (currentType === 'tractor') {
-    fetch(modelsApi()+'?make='+encodeURIComponent(this.value)).then(r=>r.json()).then(items => {
-      const sel = $('model');
-      sel.innerHTML = '<option value="">Select model</option>';
-      items.forEach(m => {
-        const o = document.createElement('option');
+  const api = currentType === 'motor_vehicle' ? '/api/models' : (currentType === 'motor_cycle' ? '/api/mc_models' : '/api/tractor_models');
+  fetch(api + '?make=' + encodeURIComponent(this.value)).then(r=>r.json()).then(items => {
+    const sel = $('model');
+    sel.innerHTML = '<option value="">Select model</option>';
+    items.forEach(m => {
+      const o = document.createElement('option');
+      if (currentType === 'tractor') {
         o.value = m.model;
         o.textContent = m.model + (m.horsepower ? ' (' + m.horsepower + ' HP)' : '');
         o.dataset.crsp = m.crsp;
-        sel.appendChild(o);
-      });
+      } else {
+        o.value = m; o.textContent = m;
+      }
+      sel.appendChild(o);
     });
-  } else {
-    fetch(modelsApi()+'?make='+encodeURIComponent(this.value)).then(r=>r.json()).then(models => {
-      const sel = $('model');
-      sel.innerHTML = '<option value="">Select model</option>';
-      models.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
-    });
-  }
-};
+    initChoice('model');
+  });
+});
 
-$('model').onchange = function() {
-  if ($('modelNumber')) $('modelNumber').innerHTML = '<option value="">Any</option>';
+$('model').addEventListener('change', function() {
   resetVariantSelects();
   $('crsp').value = '';
   delete $('crsp').dataset.crspRaw;
-  $('calcBtn').disabled = true;
   if (!this.value || !$('make').value) return;
   if (currentType === 'tractor') {
-    const opt = this.selectedOptions[0];
+    const opt = this.options[this.selectedIndex];
     const raw = parseFloat(opt.dataset.crsp);
-    if (!isNaN(raw) && raw > 0) {
+    if (!isNaN(raw)) {
       $('crsp').value = Math.round(raw).toLocaleString('en-KE');
       $('crsp').dataset.crspRaw = raw;
       $('calcBtn').disabled = false;
-    } else {
-      $('crsp').value = '';
-      $('calcBtn').disabled = true;
     }
     return;
   }
-  const api = modelNosApi();
-  if (api) {
-    fetch(api+'?make='+encodeURIComponent($('make').value)+'&model='+encodeURIComponent(this.value))
-      .then(r=>r.json()).then(nums => {
-        const sel = $('modelNumber');
-        nums.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
-      });
-  }
+  const api = currentType === 'motor_vehicle' ? '/api/model_numbers' : '/api/mc_model_numbers';
+  fetch(api + '?make='+encodeURIComponent($('make').value)+'&model='+encodeURIComponent(this.value))
+    .then(r=>r.json()).then(nums => {
+      const sel = $('modelNumber');
+      sel.innerHTML = '<option value="">Any</option>';
+      nums.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+    });
   loadVariants();
-};
+});
 
 $('modelNumber').onchange = function() {
-  resetVariantSelects(); $('crsp').value = ''; delete $('crsp').dataset.crspRaw; $('calcBtn').disabled = true;
+  resetVariantSelects(); $('crsp').value = ''; delete $('crsp').dataset.crspRaw;
   if (currentType !== 'tractor') loadVariants();
 };
 
 function loadVariants() {
   const make = $('make').value, model = $('model').value, modelNo = $('modelNumber').value;
   if (!make || !model) return;
-  let url = variantsApi()+'?make='+encodeURIComponent(make)+'&model='+encodeURIComponent(model);
+  const api = currentType === 'motor_vehicle' ? '/api/variants' : '/api/mc_variants';
+  let url = api + '?make='+encodeURIComponent(make)+'&model='+encodeURIComponent(model);
   if (modelNo) url += '&model_number='+encodeURIComponent(modelNo);
   fetch(url).then(r=>r.json()).then(variants => {
     variantData = variants;
     cascadeFields();
     if (variants.length === 1) autoSelectVariant(variants[0]);
   });
-}
-
-function populateSelect(id, values) {
-  const sel = $(id);
-  if (!sel) return;
-  const current = sel.value;
-  sel.innerHTML = '<option value="">Select</option>';
-  [...new Set(values)].forEach(v => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
-  if ([...new Set(values)].includes(current)) sel.value = current;
 }
 
 function autoSelectVariant(v) {
@@ -540,55 +592,66 @@ function cascadeFields(exclude) {
   });
 }
 
-function onVariantChange(changedKey) {
-  const id = {drive_config:'driveConfig',body_type:'bodyType',engine_capacity:'engineCapacity'}[changedKey] || changedKey;
-  const el = $(id);
-  if (el && !el.value) {
-    cascadeFields(changedKey);
-  } else {
-    cascadeFields(changedKey);
-  }
-  matchCRSP();
-}
-
 ['transmission','driveConfig','engineCapacity','bodyType','fuel'].forEach(id => {
   const el = $(id);
   if (!el) return;
   const key = {driveConfig:'drive_config',bodyType:'body_type',engineCapacity:'engine_capacity'}[id] || id;
-  el.onchange = () => onVariantChange(key);
+  el.onchange = () => {
+    cascadeFields(key);
+    matchCRSP();
+  };
 });
 
 /* ---- calculate ---- */
 $('calcBtn').onclick = function() {
   const crsp = parseFloat($('crsp').dataset.crspRaw);
-  if (!crsp) { showError('Please select a complete variant with a CRSP value.'); return; }
+  if (!crsp) { showError('Please select a complete variant.'); return; }
   const yom = parseInt($('yom').value);
   const mom = parseInt($('mom').value);
-  if (!yom) { showError('Please select the year of manufacture.'); return; }
-  if (!mom) { showError('Please select the month of manufacture.'); return; }
   hideError();
   $('loading').style.display = 'block';
   this.disabled = true;
+  
+  const payload = {
+    crsp, yom, mom,
+    is_direct: $('importType').value,
+    vehicle_type: currentType,
+    engine_capacity: $('engineCapacity').value,
+    fuel: $('fuel').value,
+    body_type: $('bodyType') ? $('bodyType').value : '',
+  };
+
   fetch('/api/calculate', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      crsp, yom, mom,
-      is_direct: $('importType').value,
-      vehicle_type: currentType,
-      engine_capacity: $('engineCapacity').value,
-      fuel: $('fuel').value,
-      body_type: $('bodyType') ? $('bodyType').value : '',
-    })
+    body: JSON.stringify(payload)
   }).then(r=>r.json()).then(data => {
     $('loading').style.display = 'none';
     this.disabled = false;
     if (data.error) { showError(data.error); return; }
+    
+    // Landed cost calc
+    const fob = parseFloat($('purchasePrice').value) || 0;
+    const ship = parseFloat($('shippingCost').value) || 0;
+    const rate = parseFloat($('exchangeRate').value) || 1;
+    
+    if (fob > 0) {
+      data.fob_kes = (fob + ship) * rate;
+      data.landed_cost = data.fob_kes + data.grand_total;
+    }
+    
+    data.make = $('make').value;
+    data.model = $('model').value;
+    data.engine_capacity = $('engineCapacity').value;
+    data.fuel = $('fuel').value;
+    data.body_type = $('bodyType') ? $('bodyType').value : '';
+    
+    lastCalculationData = data;
     showResults(data);
   }).catch(() => {
     $('loading').style.display = 'none';
     this.disabled = false;
-    showError('Network error. Please try again.');
+    showError('Network error.');
   });
 };
 
@@ -597,10 +660,14 @@ function showResults(data) {
   const fmt = n => 'KES ' + Math.round(Number(n)).toLocaleString('en-KE');
   $('resultsCard').classList.add('show');
   $('vehicleInfo').innerHTML = `
-    <div class="s-item"><span class="s-label">Vehicle:</span><span class="s-value">${$('make').value} ${$('model').value}</span></div>
+    <div class="s-item"><span class="s-label">Vehicle:</span><span class="s-value">${data.make} ${data.model}</span></div>
     <div class="s-item"><span class="s-label">YOM:</span><span class="s-value">${months[data.mom-1]} ${data.yom} (${data.age_years} yrs)</span></div>
     <div class="s-item"><span class="s-label">CRSP:</span><span class="s-value">${fmt(data.crsp)}</span></div>
     <div class="s-item"><span class="s-label">Depreciation:</span><span class="s-value">${data.depreciation_rate}</span></div>
+    <div class="s-item" style="grid-column:1/-1;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+      <span class="s-label">Tax Basis:</span>
+      <span class="s-value" style="color:var(--accent);font-weight:600">${data.tax_basis}</span>
+    </div>
   `;
   const items = [
     {label:'Customs Value',                   value: data.customs_value},
@@ -610,11 +677,38 @@ function showResults(data) {
     {label:'RDL (2%)',                         value: data.rdl},
     {label:'IDF Fees (2.5%)',                 value: data.idf},
   ];
-  $('resultGrid').innerHTML = items.map(i =>
-    `<div class="r-item"><span class="rl">${i.label}</span><span class="rv">${fmt(i.value)}</span></div>`
-  ).join('') +
-    `<div class="r-item total"><span class="rl">Total Duty Payable</span><span class="rv">${fmt(data.grand_total)}</span></div>`;
+  
+  let html = items.map(i => `<div class="r-item"><span class="rl">${i.label}</span><span class="rv">${fmt(i.value)}</span></div>`).join('');
+  html += `<div class="r-item total"><span class="rl">Total Duty Payable</span><span class="rv">${fmt(data.grand_total)}</span></div>`;
+  
+  if (data.landed_cost) {
+    html += `<div class="separator" style="grid-column:1/-1;margin:10px 0"></div>`;
+    html += `<div class="r-item"><span class="rl">Purchase + Shipping (KES)</span><span class="rv">${fmt(data.fob_kes)}</span></div>`;
+    html += `<div class="r-item total" style="background:rgba(180,50,50,0.05);border-color:rgba(180,50,50,0.15)"><span class="rl" style="color:#b04030">Total Landed Cost Estimate</span><span class="rv" style="color:#b04030">${fmt(data.landed_cost)}</span></div>`;
+  }
+  
+  html += `<div style="grid-column:1/-1;margin-top:15px"><button class="btn" onclick="downloadPDF()" style="background:var(--accent-dark)">Download PDF Quote</button></div>`;
+  
+  $('resultGrid').innerHTML = html;
   window.scrollTo({top: $('resultsCard').offsetTop - 24, behavior: 'smooth'});
+}
+
+function downloadPDF() {
+  if (!lastCalculationData) return;
+  fetch('/api/report/pdf-quote', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(lastCalculationData)
+  }).then(resp => resp.blob()).then(blob => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `Duty_Quote_${lastCalculationData.make}_${lastCalculationData.model}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+  });
 }
 
 function showError(msg) { const el = $('errorMsg'); el.textContent = msg; el.style.display = 'block'; }
@@ -622,28 +716,20 @@ function hideError() { $('errorMsg').style.display = 'none'; }
 
 /* ---- timing badge ---- */
 function updateTimingBadge() {
-  const yom = parseInt($('yom').value);
-  const mom = parseInt($('mom').value);
+  const yom = parseInt($('yom').value), mom = parseInt($('mom').value);
   const el = $('timingBadge');
   if (!yom || !mom) { el.style.display = 'none'; return; }
-  const now = new Date();
-  const curMonth = now.getMonth() + 1;
+  const curMonth = new Date().getMonth() + 1;
   if (curMonth >= mom) {
-    el.style.display = 'inline-flex';
-    el.textContent = 'Post-birthday \u2014 lower duty';
-    el.style.background = '#d8f3dc';
-    el.style.borderColor = '#a7d4b5';
-    el.style.color = '#1b7a4a';
+    el.style.display = 'inline-flex'; el.textContent = 'Post-birthday \u2014 lower duty';
+    el.style.background = '#d8f3dc'; el.style.borderColor = '#a7d4b5'; el.style.color = '#1b7a4a';
   } else {
-    el.style.display = 'inline-flex';
-    el.textContent = 'Pre-birthday \u2014 higher duty';
-    el.style.background = '#fde8e4';
-    el.style.borderColor = '#e8c4b8';
-    el.style.color = '#b04030';
+    el.style.display = 'inline-flex'; el.textContent = 'Pre-birthday \u2014 higher duty';
+    el.style.background = '#fde8e4'; el.style.borderColor = '#e8c4b8'; el.style.color = '#b04030';
   }
 }
-$('yom').addEventListener('change', updateTimingBadge);
-$('mom').addEventListener('change', updateTimingBadge);
+$('yom').onchange = updateTimingBadge;
+$('mom').onchange = updateTimingBadge;
 
 /* ---- tips toggle ---- */
 document.getElementById('tipsToggle').addEventListener('click', function(){
@@ -668,6 +754,14 @@ document.getElementById('tipsToggle').addEventListener('click', function(){
     if (i+1 === 6) o.selected = true;
     rmom.appendChild(o);
   });
+  fetch('/api/body_types').then(r=>r.json()).then(types => {
+    const sel = $('reportBodyType');
+    types.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t; o.textContent = t;
+      sel.appendChild(o);
+    });
+  });
 })();
 
 $('reportMaxDuty').onblur = function() {
@@ -676,51 +770,18 @@ $('reportMaxDuty').onblur = function() {
   if (!isNaN(num) && num > 0) this.value = num.toLocaleString('en-KE');
 };
 
-function updateReportTimingBadge() {
-  const yom = parseInt($('reportYom').value);
-  const mom = parseInt($('reportMom').value);
-  const el = $('reportTimingBadge');
-  if (!yom || !mom) { el.style.display = 'none'; return; }
-  const curMonth = new Date().getMonth() + 1;
-  if (curMonth >= mom) {
-    el.style.display = 'inline-flex';
-    el.textContent = 'Post-birthday \u2014 lower duty';
-    el.style.background = '#d8f3dc';
-    el.style.borderColor = '#a7d4b5';
-    el.style.color = '#1b7a4a';
-  } else {
-    el.style.display = 'inline-flex';
-    el.textContent = 'Pre-birthday \u2014 higher duty';
-    el.style.background = '#fde8e4';
-    el.style.borderColor = '#e8c4b8';
-    el.style.color = '#b04030';
-  }
-}
-$('reportYom').addEventListener('change', updateReportTimingBadge);
-$('reportMom').addEventListener('change', updateReportTimingBadge);
-
 $('reportBtn').onclick = function() {
-  const yom = parseInt($('reportYom').value);
-  const mom = parseInt($('reportMom').value);
-  const raw = $('reportMaxDuty').value.replace(/,/g, '');
-  const maxDuty = parseFloat(raw);
-  const vehicleType = $('reportType').value;
-  const isDirect = $('reportImportType').value;
-  if (!yom) { $('reportError').textContent = 'Select year of manufacture.'; $('reportError').style.display = 'block'; return; }
-  if (!mom) { $('reportError').textContent = 'Select month of manufacture.'; $('reportError').style.display = 'block'; return; }
-  if (!maxDuty || maxDuty <= 0) { $('reportError').textContent = 'Enter a valid max duty amount.'; $('reportError').style.display = 'block'; return; }
-  $('reportError').style.display = 'none';
-  $('reportLoading').style.display = 'block';
-  this.disabled = true;
-  const url = '/api/report/duties-below?yom=' + yom + '&mom=' + mom + '&max_duty=' + maxDuty + '&vehicle_type=' + vehicleType + '&is_direct=' + isDirect;
+  const yom = parseInt($('reportYom').value), mom = parseInt($('reportMom').value);
+  const raw = $('reportMaxDuty').value.replace(/,/g, ''), maxDuty = parseFloat(raw);
+  const vehicleType = $('reportType').value, isDirect = $('reportImportType').value, bodyType = $('reportBodyType').value;
+  if (!yom || !mom || !maxDuty) return;
+  $('reportLoading').style.display = 'block'; this.disabled = true;
+  let url = '/api/report/duties-below?yom=' + yom + '&mom=' + mom + '&max_duty=' + maxDuty + '&vehicle_type=' + vehicleType + '&is_direct=' + isDirect;
+  if (bodyType) url += '&body_type=' + encodeURIComponent(bodyType);
   window.location.href = url;
-  setTimeout(() => {
-    $('reportLoading').style.display = 'none';
-    $('reportBtn').disabled = false;
-  }, 3000);
+  setTimeout(() => { $('reportLoading').style.display = 'none'; $('reportBtn').disabled = false; }, 3000);
 };
 
-/* ---- init ---- */
 onTypeChange();
 </script>
 </body>

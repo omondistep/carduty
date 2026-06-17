@@ -6,9 +6,163 @@ from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+import requests
+from bs4 import BeautifulSoup
+from fpdf import FPDF
+import time
+
 app = Flask(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), 'kraduty.db')
 CURRENT_YEAR = 2025
+
+# Cache for exchange rates
+RATES_CACHE = {
+    'timestamp': 0,
+    'data': {
+        'USD': 129.50, # Fallbacks
+        'GBP': 165.00,
+        'EUR': 140.00,
+        'JPY': 0.85,
+        'ZAR': 7.20,
+        'AED': 35.20
+    }
+}
+
+def get_live_rates():
+    global RATES_CACHE
+    now = time.time()
+    # Cache for 6 hours
+    if now - RATES_CACHE['timestamp'] < 21600:
+        return RATES_CACHE['data']
+    
+    try:
+        url = "https://www.centralbank.go.ke/forex/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        table = soup.find('table')
+        if table:
+            new_rates = {}
+            rows = table.find_all('tr')[1:]
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 2:
+                    curr = cols[0].text.strip().upper()
+                    try:
+                        rate = float(cols[1].text.strip())
+                        if 'US DOLLAR' in curr: new_rates['USD'] = rate
+                        elif 'STG POUND' in curr: new_rates['GBP'] = rate
+                        elif 'EURO' in curr: new_rates['EUR'] = rate
+                        elif 'JPY (100)' in curr: new_rates['JPY'] = rate / 100.0
+                        elif 'AE DIRHAM' in curr: new_rates['AED'] = rate
+                        elif 'SA RAND' in curr: new_rates['ZAR'] = rate
+                    except: continue
+            if new_rates:
+                RATES_CACHE['data'].update(new_rates)
+                RATES_CACHE['timestamp'] = now
+    except Exception as e:
+        print(f"Rate fetch error: {e}")
+    
+    return RATES_CACHE['data']
+
+class DutyPDF(FPDF):
+    def header(self):
+        self.set_font('Helvetica', 'B', 15)
+        self.set_text_color(27, 77, 56) # Professional Green
+        self.cell(0, 10, 'KRA MOTOR VEHICLE DUTY QUOTE', align='C', new_x='LMARGIN', new_y='NEXT')
+        self.set_font('Helvetica', 'I', 9)
+        self.set_text_color(100)
+        self.cell(0, 5, f'Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='C', new_x='LMARGIN', new_y='NEXT')
+        self.ln(10)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.cell(0, 10, 'Page ' + str(self.page_no()) + ' - KRA Duty Calculator', align='C')
+
+@app.route('/api/exchange-rates')
+def api_exchange_rates():
+    return jsonify(get_live_rates())
+
+@app.route('/api/report/pdf-quote', methods=['POST'])
+def api_pdf_quote():
+    data = request.get_json()
+    
+    pdf = DutyPDF()
+    pdf.add_page()
+    
+    # Vehicle Info Section
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 10, ' VEHICLE SPECIFICATIONS', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 10)
+    
+    info = [
+        ('Make/Model:', f"{data.get('make')} {data.get('model')}"),
+        ('Year of Manufacture:', str(data.get('yom'))),
+        ('Engine Capacity:', str(data.get('engine_capacity'))),
+        ('Fuel Type:', str(data.get('fuel'))),
+        ('Body Type:', str(data.get('body_type'))),
+        ('CRSP Value:', f"KES {int(data.get('crsp', 0)):,}")
+    ]
+    
+    for label, val in info:
+        pdf.cell(50, 8, label)
+        pdf.cell(0, 8, val, new_x='LMARGIN', new_y='NEXT')
+    
+    pdf.ln(5)
+    
+    # Duty Breakdown Section
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 10, ' DUTY & TAX BREAKDOWN', fill=True, new_x='LMARGIN', new_y='NEXT')
+    pdf.set_font('Helvetica', '', 10)
+    
+    taxes = [
+        ('Customs Value', data.get('customs_value')),
+        (f"Import Duty ({data.get('import_duty_rate')})", data.get('import_duty')),
+        (f"Excise Duty ({data.get('excise_rate')})", data.get('excise_duty')),
+        ('VAT (16%)', data.get('vat')),
+        ('RDL (2%)', data.get('rdl')),
+        ('IDF Fees (2.5%)', data.get('idf'))
+    ]
+    
+    for label, val in taxes:
+        pdf.cell(100, 8, label)
+        pdf.cell(0, 8, f"KES {int(val):,}", align='R', new_x='LMARGIN', new_y='NEXT')
+        
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.set_text_color(27, 77, 56)
+    pdf.cell(100, 10, 'TOTAL DUTY PAYABLE', border='T')
+    pdf.cell(0, 10, f"KES {int(data.get('grand_total', 0)):,}", border='T', align='R', new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0)
+    
+    # Landing Cost Section if present
+    if data.get('landed_cost'):
+        pdf.ln(5)
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.cell(0, 10, ' TOTAL LANDED COST ESTIMATE', fill=True, new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 10)
+        
+        pdf.cell(100, 8, 'Purchase + Shipping (Converted)')
+        pdf.cell(0, 8, f"KES {int(data.get('fob_kes', 0)):,}", align='R', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(100, 8, 'Total Duty Payable')
+        pdf.cell(0, 8, f"KES {int(data.get('grand_total', 0)):,}", align='R', new_x='LMARGIN', new_y='NEXT')
+        
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.set_text_color(180, 50, 50) # Red-ish for bottom line
+        pdf.cell(100, 10, 'ESTIMATED TOTAL LANDED COST', border='T')
+        pdf.cell(0, 10, f"KES {int(data.get('landed_cost', 0)):,}", border='T', align='R', new_x='LMARGIN', new_y='NEXT')
+        
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.multi_cell(0, 5, 'Disclaimer: This quote is an estimate based on current KRA CRSP values and prevailing exchange rates. Actual values at the time of entry may vary. This is not an official KRA assessment.')
+
+    output = io.BytesIO()
+    pdf_bytes = pdf.output()
+    output.write(pdf_bytes)
+    output.seek(0)
+    
+    return send_file(output, mimetype='application/pdf', as_attachment=True, download_name='KRA_Duty_Quote.pdf')
 
 def get_db():
     if 'db' not in g:
@@ -190,6 +344,21 @@ def calc_taxes(crsp, years_old, is_direct, vehicle_type, engine_cc, fuel, body_t
         
     grand_total = import_duty + excise_duty + vat + rdl + idf
 
+    # Basis Description
+    basis_map = {
+        1: "Engine capacity \u2264 1500cc (including S/Cab, Lorry, Bus)",
+        2: "Engine rating > 1500cc (Standard Passenger/Cargo)",
+        3: f"High capacity engine ({cc}cc) \u2014 exceeding limits for {'Petrol' if fuel_upper in ('GASOLINE', 'PETROL') else 'Diesel'}",
+        4: "100% Electric Powered Vehicle",
+        5: "Public School Bus",
+        6: "Prime Mover (Excise Exempt)",
+        7: "Trailer (Excise Exempt)",
+        8: "Ambulance (Duty Exempt)",
+        9: "Motor Cycle (Flat Excise)",
+        10: "Heavy Machinery / Tractor (Duty & Excise Exempt)"
+    }
+    tax_basis = basis_map.get(tab, "Standard Valuation")
+
     components = {
         'customs_value': round(customs, 2),
         'import_duty': round(import_duty, 2),
@@ -201,7 +370,8 @@ def calc_taxes(crsp, years_old, is_direct, vehicle_type, engine_cc, fuel, body_t
         'rdl': round(rdl, 2),
         'idf': round(idf, 2),
         'grand_total': round(grand_total, 2),
-        'tabulation': tab
+        'tabulation': tab,
+        'tax_basis': tax_basis
     }
     return components
 
@@ -317,6 +487,12 @@ def api_tractor_models():
         models.append({'model': row['model'], 'horsepower': row['horsepower'], 'crsp': row['crsp']})
     return jsonify(models)
 
+@app.route('/api/body_types')
+def api_body_types():
+    db = get_db()
+    cur = db.execute("SELECT DISTINCT body_type FROM motor_vehicles WHERE body_type IS NOT NULL ORDER BY body_type")
+    return jsonify([row['body_type'] for row in cur.fetchall()])
+
 @app.route('/api/calculate', methods=['POST'])
 def api_calculate():
     data = request.get_json()
@@ -358,11 +534,15 @@ def api_report_duties_below():
     max_duty = float(request.args.get('max_duty', 500000))
     is_direct = request.args.get('is_direct', 'true') == 'true'
     vehicle_type = request.args.get('vehicle_type', 'motor_vehicle')
+    body_filter = request.args.get('body_type', '')
 
     db = get_db()
 
     if vehicle_type == 'motor_vehicle':
-        cur = db.execute("SELECT * FROM motor_vehicles")
+        if body_filter:
+            cur = db.execute("SELECT * FROM motor_vehicles WHERE body_type = ?", (body_filter,))
+        else:
+            cur = db.execute("SELECT * FROM motor_vehicles")
         rows = cur.fetchall()
     elif vehicle_type == 'motor_cycle':
         cur = db.execute("SELECT * FROM motor_cycles")
